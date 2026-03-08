@@ -81,6 +81,7 @@ def get_weather_data(start_date, end_date):
     
     try:
         res = requests.get(url, timeout=20)
+        # 【修正】エラーの理由をしっかり画面に表示するように変更
         if res.status_code == 200:
             data = res.json()
             all_dfs = []
@@ -103,9 +104,11 @@ def get_weather_data(start_date, end_date):
                 df_res[f"{area}_降水量"] = df_res[f"{area}_降水量"].ffill() / 2.0
                 
             return df_res
-        return None
+        else:
+            st.error(f"⚠️ 気象APIエラー ({res.status_code}): {res.text}")
+            return None
     except Exception as e:
-        st.error(f"気象データ取得エラー: {e}")
+        st.error(f"⚠️ 気象データ通信エラー: {e}")
         return None
 
 @st.cache_data(ttl=3600)
@@ -194,8 +197,14 @@ if st.sidebar.button("予測を実行する"):
     spot_df = get_spot_data()
     progress_bar.progress(60)
 
-    if not imb_df.empty and weather_df is not None and spot_df is not None:
-        
+    # 【修正】どこが原因で止まったのか、明確にエラーメッセージを出す
+    if imb_df.empty:
+        st.error("❌ インバランスデータの取得結果が空です。対象月のデータが存在しない可能性があります。")
+    elif weather_df is None:
+        st.error("❌ 気象データ（Open-Meteo API）の取得に失敗しました。画面上部の赤いエラーメッセージを確認してください。")
+    elif spot_df is None:
+        st.error("❌ スポット価格(CSV)の読み込みに失敗しました。")
+    else:
         features_df = pd.concat([weather_df, spot_df], axis=1).dropna()
         master_df = pd.concat([imb_df, features_df], axis=1).dropna()
         
@@ -232,7 +241,7 @@ if st.sidebar.button("予測を実行する"):
         target_features['is_dayoff'] = int(target_is_dayoff)
         
         predictions = {}
-        reports = {} # 各エリアの詳細レポートを保存
+        reports = {}
         
         all_features = list(features_df.columns) + ["hour", "minute", "dayofweek", "is_dayoff"]
         
@@ -247,7 +256,6 @@ if st.sidebar.button("予測を実行する"):
             pred = model.predict(X_target)
             predictions[area] = pred
 
-            # --- 【変更】詳細な1000文字程度のAI予測レポート生成ロジック ---
             mean_spot = X_target[f"{area}_スポット"].mean()
             max_spot = X_target[f"{area}_スポット"].max()
             min_spot = X_target[f"{area}_スポット"].min()
@@ -276,7 +284,6 @@ if st.sidebar.button("予測を実行する"):
             spot_rel = "上回る" if mean_pred > mean_spot else "下回る"
             day_type_text = "休日（土日・祝日）" if target_is_dayoff else "平日"
             
-            # 気温の評価テキスト生成
             if mean_temp > 25 or max_temp > 30:
                 temp_eval = "気温が高く、冷房需要の大幅な増加が見込まれます。電力需給の逼迫リスクが高まりやすい環境です。"
             elif mean_temp < 10 or min_temp < 5:
@@ -284,7 +291,6 @@ if st.sidebar.button("予測を実行する"):
             else:
                 temp_eval = "気候は比較的穏やかであり、空調需要による極端な電力消費の変動は限定的と考えられます。"
                 
-            # 日射量の評価テキスト生成
             if mean_solar > 150:
                 solar_eval = "日中は豊富な日射量により太陽光発電の積極的な稼働が期待され、昼間帯のインバランス価格の押し下げ効果が強く働くでしょう。"
             elif mean_solar < 50:
@@ -292,7 +298,6 @@ if st.sidebar.button("予測を実行する"):
             else:
                 solar_eval = "太陽光発電は標準的な出力が見込まれますが、天候の急変による需給バランスのブレに注意が必要です。"
 
-            # スプレッド（乖離）の評価テキスト生成
             spread = mean_pred - mean_spot
             if spread > 3.0:
                 spread_eval = "スポット価格に対してインバランス料金が明確に上振れする（プレミアムがつく）強いシグナルが出ています。不足インバランスには多大なペナルティが発生する危険な状態のため、事前の調達を厚めにすることを推奨します。"
@@ -403,5 +408,3 @@ if st.sidebar.button("予測を実行する"):
         
         progress_bar.progress(100)
         status_text.text("全処理が完了しました。")
-    else:
-        st.error("データの取得に失敗しました。対象期間のデータが存在しない可能性があります。")
